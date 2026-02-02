@@ -16,11 +16,6 @@ build/
 .env.*
 !.env.example
 
-# keep run configs tracked
-!configs/
-!configs/runs/
-!configs/runs/*.env
-
 # Virtualenvs
 .venv/
 venv/
@@ -55,3 +50,8 @@ checkpoints/
 *.tgz
 *.tar.gz
 *.zip
+
+# keep run configs tracked
+!configs/
+!configs/runs/
+!configs/runs/*.env
