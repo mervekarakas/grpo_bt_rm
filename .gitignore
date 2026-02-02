@@ -16,6 +16,11 @@ build/
 .env.*
 !.env.example
 
+# keep run configs tracked
+!configs/
+!configs/runs/
+!configs/runs/*.env
+
 # Virtualenvs
 .venv/
 venv/
