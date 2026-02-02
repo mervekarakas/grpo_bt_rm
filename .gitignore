@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Virtualenvs
+.venv/
+venv/
+venvs/
+
+# Jupyter / misc
+.ipynb_checkpoints/
+.DS_Store
+
+# HuggingFace cache / datasets (huge)
+hf_home/
+datasets/
+data/
+*.arrow
+*.lock
+
+# Outputs / logs
+outputs/
+wandb/
+runs/
+logs/
+*.log
+
+# Experiments / checkpoints (huge)
+experiments/
+checkpoints/
+*.safetensors
+*.bin
+*.pt
+
+# Archives
+*.tgz
+*.tar.gz
+*.zip
