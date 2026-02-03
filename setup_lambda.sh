@@ -38,13 +38,21 @@ fi
 pip install -r "$REQ_FILE"
 
 # Editable install for ms-swift
+# ---------------- ms-swift (fork, pinned) ----------------
 MS_SWIFT_DIR="$FS_ROOT/projects/ms-swift"
-if [ ! -d "$MS_SWIFT_DIR" ]; then
-  echo "ERROR: ms-swift directory not found at: $MS_SWIFT_DIR"
-  echo "Make sure you have copied / unpacked ms-swift into $FS_ROOT/projects/ms-swift"
-  exit 1
+MS_SWIFT_REPO="git@github.com:mervekarakas/ms-swift.git"
+MS_SWIFT_COMMIT="ffb9c73a4178a7956cbceee837c2ef11114d2387"
+
+if [ ! -d "$MS_SWIFT_DIR/.git" ]; then
+  git clone "$MS_SWIFT_REPO" "$MS_SWIFT_DIR"
 fi
+
+cd "$MS_SWIFT_DIR"
+git fetch origin
+git checkout "$MS_SWIFT_COMMIT"
+
 pip install -e "$MS_SWIFT_DIR"
+
 
 # Quick sanity checks
 python -c "import swift; print('swift loaded from:', swift.__file__)"
