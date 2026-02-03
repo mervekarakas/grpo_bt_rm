@@ -1,0 +1,8 @@
+datasets
+transformers
+peft
+accelerate
+numpy
+pandas
+tqdm
+wandb

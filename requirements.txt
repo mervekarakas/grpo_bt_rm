@@ -1,3 +1,6 @@
+# NOTE:
+# This file is a full environment snapshot for Lambda.
+# Local users should install requirements.core.txt instead.
 absl-py==2.3.1
 accelerate==1.12.0
 addict==2.4.0
@@ -65,7 +68,6 @@ matplotlib==3.10.8
 mdurl==0.1.2
 modelscope==1.33.0
 mpmath==1.3.0
--e git+https://github.com/modelscope/ms-swift.git@e1ac0cccee3f69a819c46a635d54677e404a4464#egg=ms_swift
 msgspec==0.20.0
 multidict==6.7.0
 multiprocess==0.70.16
