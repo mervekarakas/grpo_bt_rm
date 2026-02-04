@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "grpo_bt_rm"
+version = "0.1.0"
+description = "GRPO + Bradley-Terry generative reward model for TL;DR summarization"
+requires-python = ">=3.10"
+dependencies = [
+    "datasets>=3.6",
+    "transformers>=4.57",
+    "torch>=2.9",
+    "accelerate>=1.12",
+    "peft>=0.18",
+    "numpy>=2.2",
+    "pandas>=2.3",
+    "wandb>=0.23",
+]
+
+[project.optional-dependencies]
+dev = ["ruff", "pytest"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

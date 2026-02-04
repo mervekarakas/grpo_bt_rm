@@ -55,4 +55,5 @@ checkpoints/
 !configs/
 !configs/runs/
 !configs/runs/*.env
+!src/grpo_bt_rm/data/
 !src/grpo_bt_rm/data/*.py

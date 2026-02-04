@@ -279,5 +279,5 @@ bash setup_lambda.sh
 
 ## Notes
 
-- This repo is intended to be used via `PYTHONPATH` + scripts; you do **not** need `pip install -e .` for `grpo_bt_rm`.
+- This repo can be used via `PYTHONPATH` + scripts (`source scripts/setup_env.sh`) **or** installed as an editable package (`pip install -e .`).
 - Keep secrets out of git: use `.env` locally, commit only `.env.example`.

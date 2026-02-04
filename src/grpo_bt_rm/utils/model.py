@@ -121,7 +121,7 @@ def load_ckpt_model(base_model: str, ckpt_dir: str, dtype: str = "bf16"):
 
     return tok, model
 
-# TODO: Delete this once old mudules are removed
+# TODO: Delete this once old modules are removed
 # Backward compat: older code may still call load_model
 def load_model(base_model: str, ckpt_dir: str, dtype: str):
     return load_ckpt_model(base_model, ckpt_dir, dtype)
