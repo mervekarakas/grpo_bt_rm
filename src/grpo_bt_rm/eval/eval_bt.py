@@ -6,8 +6,8 @@ from typing import List, Optional
 
 import numpy as np
 import torch
-from datasets import load_dataset
 
+from grpo_bt_rm.data.registry import get_dataset
 from grpo_bt_rm.prompts.registry import get_prompt
 from grpo_bt_rm.parsing.registry import get_parser
 
@@ -26,6 +26,7 @@ def main(argv: Optional[List[str]] = None):
 
     ap.add_argument("--run_dir", required=True)
     ap.add_argument("--checkpoint", required=True)
+    ap.add_argument("--dataset", default="summarize_from_feedback", help="Dataset name from registry")
 
     ap.add_argument("--n_pairs", type=int, default=500)
     ap.add_argument("--seed", type=int, default=0)
@@ -71,8 +72,8 @@ def main(argv: Optional[List[str]] = None):
 
     tok, model = load_ckpt_model(base_model, args.checkpoint, args.dtype)
 
-    ds = load_dataset("openai/summarize_from_feedback", "comparisons")
-    val = ds["validation"]
+    adapter = get_dataset(args.dataset)
+    val = adapter.load_split(adapter.default_eval_split)
     idxs = list(range(len(val)))
     random.shuffle(idxs)
     idxs = idxs[:args.n_pairs]
@@ -106,10 +107,7 @@ def main(argv: Optional[List[str]] = None):
 
         for idx in batch:
             ex = val[idx]
-            post = ex["info"]["post"]
-            s0 = ex["summaries"][0]["text"]
-            s1 = ex["summaries"][1]["text"]
-            label = int(ex["choice"])
+            post, s0, s1, label = adapter.extract_pair(ex)
             prompts.append(prompt_fn(post, s0))
             prompts.append(prompt_fn(post, s1))
             labels.append(label)

@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import argparse
-import json
-import os
 import random
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
 import numpy as np
-from datasets import load_dataset
 
+from grpo_bt_rm.data.registry import get_dataset
 from grpo_bt_rm.prompts.registry import get_prompt
 from grpo_bt_rm.parsing.registry import get_parser
 from grpo_bt_rm.utils.model import load_qwen_instruct
@@ -21,23 +19,11 @@ from grpo_bt_rm.metrics.reporting import (
 )
 
 
-def _load_validation_pairs(split: str):
-    ds = load_dataset("openai/summarize_from_feedback", "comparisons")
-    return ds[split]
-
-
-def _extract_pair(ex) -> Tuple[str, str, str, int]:
-    post = ex["info"]["post"]
-    s0 = ex["summaries"][0]["text"]
-    s1 = ex["summaries"][1]["text"]
-    label = int(ex["choice"])
-    return post, s0, s1, label
-
-
 def main(argv: Optional[List[str]] = None):
     ap = argparse.ArgumentParser()
 
-    ap.add_argument("--split", type=str, default="validation")
+    ap.add_argument("--dataset", default="summarize_from_feedback", help="Dataset name from registry")
+    ap.add_argument("--split", type=str, default="")
     ap.add_argument("--n_pairs", type=int, default=1000)
     ap.add_argument("--seed", type=int, default=0)
 
@@ -86,7 +72,9 @@ def main(argv: Optional[List[str]] = None):
             args.unc_high = 4.0 if args.unc_high is None else args.unc_high
 
     # data
-    data = _load_validation_pairs(args.split)
+    adapter = get_dataset(args.dataset)
+    split = args.split or adapter.default_eval_split
+    data = adapter.load_split(split)
     idxs = list(range(len(data)))
     rng.shuffle(idxs)
     idxs = idxs[:args.n_pairs]
@@ -97,7 +85,7 @@ def main(argv: Optional[List[str]] = None):
     print("\n=== Pointwise baseline scoring ===")
     print(f"model={args.model_name}")
     print(f"prompt={args.prompt} parser={parser_name}")
-    print(f"split={args.split} n_pairs={args.n_pairs} seed={args.seed}")
+    print(f"dataset={args.dataset} split={split} n_pairs={args.n_pairs} seed={args.seed}")
     print(f"do_sample={args.do_sample} n_samples={args.n_samples} temp={args.temperature} top_p={args.top_p} top_k={args.top_k}")
     print(f"max_new_tokens={args.max_new_tokens} batch_pairs={args.batch_pairs}")
     print(f"unc_low={args.unc_low} unc_high={args.unc_high} report_uncertainty={args.report_uncertainty}\n")
@@ -130,7 +118,7 @@ def main(argv: Optional[List[str]] = None):
         labels: List[int] = []
 
         for idx in batch:
-            post, s0, s1, label = _extract_pair(data[idx])
+            post, s0, s1, label = adapter.extract_pair(data[idx])
             prompts.append(prompt_fn(post, s0))
             prompts.append(prompt_fn(post, s1))
             labels.append(label)
