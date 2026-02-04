@@ -2,7 +2,7 @@ import os
 from statistics import mean
 from typing import Dict
 
-from swift.plugin import ORM, orms
+from swift.rewards import ORM, orms
 
 from grpo_bt_rm.parsing.registry import get_parser
 from grpo_bt_rm.utils.math import log_sigmoid, scaled_delta

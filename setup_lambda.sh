@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 set -euo pipefail
 
 # Persistent filesystem root on Lambda
@@ -40,7 +39,7 @@ pip install -r "$REQ_FILE"
 # Editable install for ms-swift
 # ---------------- ms-swift (fork, pinned) ----------------
 MS_SWIFT_DIR="$FS_ROOT/projects/ms-swift"
-MS_SWIFT_REPO="git@github.com:mervekarakas/ms-swift.git"
+MS_SWIFT_REPO="https://github.com/mervekarakas/ms-swift.git"
 MS_SWIFT_COMMIT="ffb9c73a4178a7956cbceee837c2ef11114d2387"
 
 if [ ! -d "$MS_SWIFT_DIR/.git" ]; then
