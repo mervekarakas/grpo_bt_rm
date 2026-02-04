@@ -16,6 +16,7 @@ Sweep:
   --gpus "..."           Space-separated CUDA_VISIBLE_DEVICES IDs to use
 
 Eval params:
+  --dataset NAME         (default: from \$EVAL_DATASET or summarize_from_feedback)
   --n_pairs N            (default: from \$EVAL_N_PAIRS or 2000)
   --dtype bf16|fp16      (default: from \$EVAL_DTYPE or bf16)
   --max_new_tokens N     (default: from \$EVAL_MAX_NEW_TOKENS or 128)
@@ -36,6 +37,11 @@ BT + uncertainty:
   --unc_low X            (default: from \$EVAL_UNC_LOW or 20)
   --unc_high X           (default: from \$EVAL_UNC_HIGH or 80)
   --no_report_margins    Disable --report_margins
+
+Scheduling:
+  --dynamic              Dynamic GPU scheduling: each GPU grabs the next job as
+                         soon as it finishes (good for mixed GPU speeds).
+                         Default is batch-wait (all GPUs wait for slowest).
 
 Output:
   --no_summary           Skip tools/summarize_eval_logs.py
@@ -59,6 +65,7 @@ fi
 RUN_DIR=""
 EVAL_SUBDIR="${EVAL_SUBDIR:-eval_score100_2k}"
 
+DATASET="${EVAL_DATASET:-summarize_from_feedback}"
 N_PAIRS="${EVAL_N_PAIRS:-2000}"
 DTYPE="${EVAL_DTYPE:-bf16}"
 MAX_NEW_TOKENS="${EVAL_MAX_NEW_TOKENS:-128}"
@@ -78,6 +85,7 @@ UNC_LOW="${EVAL_UNC_LOW:-20}"
 UNC_HIGH="${EVAL_UNC_HIGH:-80}"
 REPORT_MARGINS=1
 DO_SUMMARY=1
+DYNAMIC=0
 
 USE_TRAIN_ARGS=0
 
@@ -96,6 +104,7 @@ while [[ $# -gt 0 ]]; do
     --seeds) read -r -a SEEDS <<< "$2"; shift 2 ;;
     --gpus)  read -r -a GPUS  <<< "$2"; shift 2 ;;
 
+    --dataset) DATASET="$2"; shift 2 ;;
     --n_pairs) N_PAIRS="$2"; shift 2 ;;
     --dtype) DTYPE="$2"; shift 2 ;;
     --max_new_tokens) MAX_NEW_TOKENS="$2"; shift 2 ;;
@@ -117,6 +126,7 @@ while [[ $# -gt 0 ]]; do
     --no_report_margins) REPORT_MARGINS=0; shift 1 ;;
 
     --no_summary) DO_SUMMARY=0; shift 1 ;;
+    --dynamic) DYNAMIC=1; shift 1 ;;
     --use_train_args) USE_TRAIN_ARGS=1; shift 1 ;;
 
     -h|--help) usage; exit 0 ;;
@@ -179,56 +189,110 @@ echo "OUT_DIR:            $OUT_DIR"
 echo "CKPTS:              ${CKPTS[*]}"
 echo "SEEDS:              ${SEEDS[*]}"
 echo "GPUS:               ${GPUS[*]}"
-echo "n_pairs=$N_PAIRS dtype=$DTYPE max_new_tokens=$MAX_NEW_TOKENS batch_pairs=$BATCH_PAIRS"
+echo "dataset=$DATASET n_pairs=$N_PAIRS dtype=$DTYPE max_new_tokens=$MAX_NEW_TOKENS batch_pairs=$BATCH_PAIRS"
 echo "sample=$DO_SAMPLE n_samples=$N_SAMPLES temp=$TEMPERATURE top_p=$TOP_P top_k=$TOP_K"
 echo "prompt=$PROMPT parser=$PARSER bt_temp=$BT_TEMP unc_low=$UNC_LOW unc_high=$UNC_HIGH report_margins=$REPORT_MARGINS"
 echo ""
 
-MAXJOBS=${#GPUS[@]}
-i=0
-
+# ---------------- build job list ----------------
+# Each job is a string: "SEED CKPT"
+JOBS=()
 for SEED in "${SEEDS[@]}"; do
   for CKPT in "${CKPTS[@]}"; do
+    JOBS+=("$SEED $CKPT")
+  done
+done
+
+echo "Total jobs: ${#JOBS[@]} (scheduling: $([ $DYNAMIC -eq 1 ] && echo dynamic || echo batch-wait))"
+echo ""
+
+# Helper: build and run the eval command for a given seed, ckpt, gpu
+run_eval_job() {
+  local SEED="$1" CKPT="$2" GPU="$3"
+  local OUT="$OUT_DIR/eval_${CKPT}_seed${SEED}.log"
+  echo "EVAL seed=$SEED ckpt=$CKPT cuda=$GPU -> $OUT"
+
+  local cmd=(python -m grpo_bt_rm.eval.eval_bt
+    --run_dir "$RESOLVED_RUN_DIR"
+    --checkpoint "$RESOLVED_RUN_DIR/$CKPT"
+    --dataset "$DATASET"
+    --n_pairs "$N_PAIRS"
+    --seed "$SEED"
+    --dtype "$DTYPE"
+    --max_new_tokens "$MAX_NEW_TOKENS"
+    --batch_pairs "$BATCH_PAIRS"
+    --n_samples "$N_SAMPLES"
+    --temperature "$TEMPERATURE"
+    --top_p "$TOP_P"
+    --top_k "$TOP_K"
+    --prompt "$PROMPT"
+    --parser "$PARSER"
+    --bt_temp "$BT_TEMP"
+    --unc_low "$UNC_LOW"
+    --unc_high "$UNC_HIGH"
+  )
+
+  if [[ $DO_SAMPLE -eq 1 ]]; then
+    cmd+=(--do_sample)
+  fi
+  if [[ $REPORT_MARGINS -eq 1 ]]; then
+    cmd+=(--report_margins)
+  fi
+
+  CUDA_VISIBLE_DEVICES="$GPU" "${cmd[@]}" > "$OUT" 2>&1
+}
+
+MAXJOBS=${#GPUS[@]}
+
+if [[ $DYNAMIC -eq 1 ]]; then
+  # ---- Dynamic scheduling: shared job queue with flock ----
+  JOBFILE=$(mktemp "$OUT_DIR/.jobqueue.XXXXXX")
+  LOCKFILE="$JOBFILE.lock"
+  touch "$LOCKFILE"
+
+  # Write all jobs to the queue file
+  for job in "${JOBS[@]}"; do
+    echo "$job"
+  done > "$JOBFILE"
+
+  # Launch one worker per GPU
+  for GPU in "${GPUS[@]}"; do
+    (
+      while true; do
+        # Atomically grab the next job
+        JOB=$(flock "$LOCKFILE" bash -c '
+          line=$(head -1 "$1" 2>/dev/null)
+          if [ -z "$line" ]; then exit 1; fi
+          sed -i "1d" "$1"
+          echo "$line"
+        ' _ "$JOBFILE") || break
+
+        read -r SEED CKPT <<< "$JOB"
+        run_eval_job "$SEED" "$CKPT" "$GPU"
+      done
+    ) &
+  done
+
+  wait
+  rm -f "$JOBFILE" "$LOCKFILE"
+
+else
+  # ---- Batch-wait scheduling (original behavior) ----
+  i=0
+  for job in "${JOBS[@]}"; do
+    read -r SEED CKPT <<< "$job"
     GPU=${GPUS[$((i % MAXJOBS))]}
-    OUT="$OUT_DIR/eval_${CKPT}_seed${SEED}.log"
-    echo "EVAL seed=$SEED ckpt=$CKPT cuda=$GPU -> $OUT"
 
-    cmd=(python -m grpo_bt_rm.eval.eval_bt
-      --run_dir "$RESOLVED_RUN_DIR"
-      --checkpoint "$RESOLVED_RUN_DIR/$CKPT"
-      --n_pairs "$N_PAIRS"
-      --seed "$SEED"
-      --dtype "$DTYPE"
-      --max_new_tokens "$MAX_NEW_TOKENS"
-      --batch_pairs "$BATCH_PAIRS"
-      --n_samples "$N_SAMPLES"
-      --temperature "$TEMPERATURE"
-      --top_p "$TOP_P"
-      --top_k "$TOP_K"
-      --prompt "$PROMPT"
-      --parser "$PARSER"
-      --bt_temp "$BT_TEMP"
-      --unc_low "$UNC_LOW"
-      --unc_high "$UNC_HIGH"
-    )
-
-    if [[ $DO_SAMPLE -eq 1 ]]; then
-      cmd+=(--do_sample)
-    fi
-    if [[ $REPORT_MARGINS -eq 1 ]]; then
-      cmd+=(--report_margins)
-    fi
-
-    CUDA_VISIBLE_DEVICES="$GPU" "${cmd[@]}" > "$OUT" 2>&1 &
+    run_eval_job "$SEED" "$CKPT" "$GPU" &
 
     i=$((i+1))
     if (( i % MAXJOBS == 0 )); then
       wait
     fi
   done
-done
+  wait
+fi
 
-wait
 echo "DONE. Logs in $OUT_DIR"
 
 if [[ $DO_SUMMARY -eq 1 ]]; then

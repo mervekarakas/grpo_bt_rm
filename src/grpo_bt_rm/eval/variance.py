@@ -8,7 +8,7 @@ import numpy as np
 # NOTE: until models.py/utils.py are moved into src/,
 # run with: PYTHONPATH=src:. python -m grpo_bt_rm.eval.variance ...
 from grpo_bt_rm.utils.model import load_qwen_instruct
-from grpo_bt_rm.data.summarize_from_feedback import extract_pair, load_comparisons_split
+from grpo_bt_rm.data.registry import get_dataset
 
 from grpo_bt_rm.prompts.registry import get_prompt
 from grpo_bt_rm.parsing.registry import get_parser
@@ -35,7 +35,8 @@ def _parse_thresholds(s: str) -> List[float]:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--split", type=str, default="validation")
+    ap.add_argument("--dataset", default="summarize_from_feedback", help="Dataset name from registry")
+    ap.add_argument("--split", type=str, default="")
     ap.add_argument("--n_pairs", type=int, default=50)
     ap.add_argument("--n_samples", type=int, default=8)
     ap.add_argument("--max_new_tokens", type=int, default=128)
@@ -64,6 +65,9 @@ def main():
     ap.add_argument("--unc_high", type=float, default=None,
     help="High threshold for extreme uncertainty. If omitted, defaults depend on parser.")
 
+    # Multi-GPU sharding
+    ap.add_argument("--shard_id", type=int, default=0, help="Shard index (0-based)")
+    ap.add_argument("--num_shards", type=int, default=1, help="Total number of shards")
 
     args = ap.parse_args()
 
@@ -86,20 +90,32 @@ def main():
     # ----------------------------
     # Data
     # ----------------------------
-    data = load_comparisons_split(args.split)
+    adapter = get_dataset(args.dataset)
+    split = args.split or adapter.default_eval_split
+    data = adapter.load_split(split)
     rng = random.Random(args.seed)
     indices = list(range(len(data)))
     rng.shuffle(indices)
     indices = indices[:args.n_pairs]
+
+    # Shard partitioning (for multi-GPU runs)
+    if args.num_shards > 1:
+        shard_size = len(indices) // args.num_shards
+        start = args.shard_id * shard_size
+        end = start + shard_size if args.shard_id < args.num_shards - 1 else len(indices)
+        indices = indices[start:end]
 
     # ----------------------------
     # Model
     # ----------------------------
     tokenizer, model, device = load_qwen_instruct()
 
-    print("\n=== Sampling variance test (BATCHED) ===")
+    shard_info = f" shard={args.shard_id}/{args.num_shards}" if args.num_shards > 1 else ""
+    print(f"\n=== Sampling variance test (BATCHED){shard_info} ===")
     print(f"prompt={args.prompt} parser={parser_name}")
-    print(f"split={args.split} n_pairs={args.n_pairs} n_samples={args.n_samples}")
+    print(f"dataset={args.dataset} split={split} n_pairs={args.n_pairs} n_samples={args.n_samples}")
+    if args.num_shards > 1:
+        print(f"shard_id={args.shard_id} num_shards={args.num_shards} shard_pairs={len(indices)}")
     print(f"temp={args.temperature} top_p={args.top_p} top_k={args.top_k} max_new_tokens={args.max_new_tokens}")
     print(f"use_chat_template={args.use_chat_template} batch_pairs={args.batch_pairs}")
     print(f"uncertainty thresholds: low={args.unc_low} high={args.unc_high}")
@@ -152,7 +168,7 @@ def main():
 
         for idx in chunk:
             ex = data[idx]
-            post, s0, s1, label = extract_pair(ex)
+            post, s0, s1, label = adapter.extract_pair(ex)
             posts.append(post)
             s0s.append(s0)
             s1s.append(s1)
@@ -278,6 +294,8 @@ def main():
                     "delta_stats_pref_minus_non": dstat,
                     "expected_correctness_ties05": p_corr_t05,
                     "expected_correctness_strict": p_corr_strict,
+                    "scores0": scores0,
+                    "scores1": scores1,
                 }
                 fout.write(json.dumps(rec) + "\n")
 
@@ -296,9 +314,10 @@ def main():
                 print("--- end ---\n")
 
         done = min(base + len(chunk), len(indices))
+        shard_prefix = f"[shard {args.shard_id}] " if args.num_shards > 1 else ""
         if done % 50 == 0 or done == len(indices):
             print(
-                f"[{done}/{args.n_pairs}] "
+                f"{shard_prefix}[{done}/{len(indices)}] "
                 f"avg_valid_rate={np.nanmean(valid_rates):.3f} "
                 f"avg_within_std={np.nanmean(within_std):.3f} "
                 f"avg_tie_rate={np.nanmean(tie_rates):.3f} "
