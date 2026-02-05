@@ -15,3 +15,16 @@ def parse_score100_first(output_text: str) -> Optional[float]:
     if not (0 <= s <= 100):
         return None
     return float(s)
+
+def parse_score100_last(output_text: str) -> Optional[float]:
+    m = _SCORE_RE.findall(output_text or "")
+    if not m:
+        return None
+    raw = m[-1].strip()  # score-last
+    try:
+        s = int(raw)
+    except ValueError:
+        return None
+    if not (0 <= s <= 100):
+        return None
+    return float(s)
