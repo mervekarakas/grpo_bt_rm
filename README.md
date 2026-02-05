@@ -86,9 +86,10 @@ chmod +x scripts/*.sh tools/*.sh
 ```
 
 ### E) Source environment
-This sets `PYTHONPATH`, HF cache directories, and loads `.env` if present.
+Activate your virtual environment first, then source the env script which sets `PYTHONPATH`, HF cache directories, and loads `.env` if present.
 
 ```bash
+source .venv/bin/activate   # or wherever your venv lives
 source scripts/setup_env.sh
 ```
 
