@@ -1,10 +1,11 @@
 # grpo_bt_rm
 
-Tools + scripts for training and evaluating a **generative reward model** with **GRPO + Bradley–Terry (BT)**-style preference learning on TL;DR comparisons (OpenAI `summarize_from_feedback`).
+Tools + scripts for training and evaluating a **generative reward model** with **GRPO + Bradley–Terry (BT)**-style preference learning on preference datasets (OpenAI `summarize_from_feedback` and Anthropic `hh-rlhf`).
 
 This repo provides:
-- **Prompt + parser registries** (`score5_*`, `score100_*`)
+- **Prompt + parser registries** (`score5_*`, `score100_*`, `hh_score100_v1`–`v4`, `hh_score5_v1`–`v4`)
 - **Pointwise JSONL dataset builder** (2 rows per preference pair: side=0 then side=1)
+- **SFT warm-up pipeline**: teacher data generation via API (Claude / Gemini) + SFT training before GRPO
 - **Reward plugins** for ms-swift GRPO (BT baseline + optional pair-shared + hardmine variants)
 - **Evaluation** over checkpoints with accuracy + tie rate + **BT log-loss** + tail diagnostics
 - **Variance / uncertainty diagnostics** to sanity-check prompt signal
@@ -23,7 +24,12 @@ This repo provides:
   - `eval/` `eval_bt.py` and `variance.py` (run with `python -m ...`)
   - `metrics/` stats + reporting helpers
   - `utils/` model loading, generation, math utilities
-- `scripts/` shell helpers (env setup, train, eval sweep)
+- `scripts/`
+  - `train_grpo.sh` GRPO training launcher
+  - `train_sft.sh` SFT warm-up training launcher
+  - `teacher_generate.py` teacher data generation via API (Anthropic / Gemini)
+  - `build_sft_data.py` convert teacher scores to SFT training format
+  - `setup_env.sh` env setup, `run_eval_sweep.sh` eval sweep
 - `tools/` utilities (variance runner, summarize eval logs, W&B uploader)
 
 ---
@@ -119,7 +125,7 @@ source configs/runs/score100_T20_C10_posclip.env
 
 ## 3) Build the pointwise dataset JSONL
 
-Build the full dataset:
+### Summarize from Feedback
 ```bash
 python -m grpo_bt_rm.data.build_dataset \
   --out /data/$USER/datasets/grpo_bt_train_score100_v1.jsonl \
@@ -128,21 +134,119 @@ python -m grpo_bt_rm.data.build_dataset \
   --add_meta
 ```
 
-Smoke test:
+### Anthropic HH-RLHF
 ```bash
 python -m grpo_bt_rm.data.build_dataset \
-  --out /tmp/grpo_bt_smoke.jsonl \
+  --dataset anthropic_hh \
+  --out /data/$USER/datasets/grpo_bt_hh_train_hh_score100_v1.jsonl \
   --split train \
-  --limit 10 \
-  --prompt score100_v1 \
+  --prompt hh_score100_v1 \
   --add_meta
 ```
 
+Smoke test (either dataset):
+```bash
+python -m grpo_bt_rm.data.build_dataset \
+  --dataset anthropic_hh \
+  --out /tmp/grpo_bt_smoke.jsonl \
+  --split train \
+  --limit 10 \
+  --prompt hh_score100_v1 \
+  --add_meta
+```
+
+### Available prompts
+
+| Prompt | Parser | Style | Dataset |
+|--------|--------|-------|---------|
+| `score100_v1` | `score100_first` | Score-first 0–100 | SFF |
+| `hh_score100_v1` | `score100_first` | Score-first 0–100 | HH |
+| `hh_score100_v2` | `score100_first` | Concise 0–100 | HH |
+| `hh_score100_v3` | `score100_last` | Reason-first 0–100 | HH |
+| `hh_score100_v4` | `score100_last` | Pros-cons-first 0–100 | HH |
+| `hh_score5_v1`–`v4` | `score5_first`/`last` | Same styles, 1–5 scale | HH |
+
+**Score-first** prompts output `<s>NN</s>` before the explanation. **Reason-first** prompts write reasoning first, then the score tag. Reason-first (v3) tends to give better accuracy + variance on the base model.
+
 ---
 
-## 4) Train GRPO (ms-swift)
+## 4) SFT warm-up (optional but recommended)
+
+When the base model's preference accuracy is low (e.g. ~57% on HH), GRPO struggles to learn because the reward signal is too noisy. An SFT warm-up uses a stronger teacher model (via API) to generate scored examples, then fine-tunes the base model to produce better scores before GRPO.
+
+### A) Generate teacher data
+
+Use `scripts/teacher_generate.py` to score HH pairs with an API model:
+
+```bash
+# Anthropic (Claude Sonnet)
+PYTHONPATH=src python scripts/teacher_generate.py \
+  --backend anthropic --model claude-sonnet-4-20250514 \
+  --api_key $ANTHROPIC_API_KEY \
+  --n_pairs 1000 --batch_size 1 --scale score100 --split train
+
+# Gemini
+PYTHONPATH=src python scripts/teacher_generate.py \
+  --backend gemini --model gemini-2.5-flash \
+  --api_key $GEMINI_API_KEY \
+  --n_pairs 500 --batch_size 50 --scale score100 --split train
+```
+
+Supports `--resume` to continue after interruptions, and `--skip_pairs N` for non-overlapping batches.
+
+### B) Build SFT training data
+
+Convert teacher scores into SFT format (user prompt + assistant response with score tag):
+
+```bash
+PYTHONPATH=src python scripts/build_sft_data.py \
+  --input_dirs /data/$USER/experiments/grpo_bt_rm/teacher_data/score100_* \
+  --output /data/$USER/experiments/grpo_bt_rm/sft_data/hh_sft_correct_only.jsonl \
+  --prompt hh_score100_v1 \
+  --filter_correct \
+  --include_both_sides
+```
+
+`--filter_correct` keeps only pairs where the teacher scored chosen > rejected (higher quality). `--include_both_sides` creates two examples per pair (one for each response).
+
+### C) Train SFT
+
+```bash
+source scripts/setup_env.sh
+bash scripts/train_sft.sh <gpu_list> <dataset_jsonl> <output_dir>
+
+# Example:
+bash scripts/train_sft.sh 0,1 \
+  /data/$USER/experiments/grpo_bt_rm/sft_data/hh_sft_correct_only.jsonl \
+  /data/$USER/experiments/grpo_bt_rm/sft_v1
+```
+
+### D) Merge LoRA adapter for GRPO
+
+SFT produces a LoRA adapter. Merge it into a full model before GRPO:
+
+```python
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from peft import PeftModel
+import torch
+
+model = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2.5-7B-Instruct", torch_dtype=torch.bfloat16)
+model = PeftModel.from_pretrained(model, "<sft_checkpoint_path>")
+model = model.merge_and_unload()
+model.save_pretrained("<merged_output_path>")
+AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct").save_pretrained("<merged_output_path>")
+```
+
+Then use the merged path as `MODEL` for GRPO training (section 5).
+
+---
+
+## 5) Train GRPO (ms-swift)
 
 ### A) Recommended: run with a preset `.env`
+
+> If you ran the SFT warm-up (section 4), set `MODEL` to the merged model path and add `EXTRA_ARGS="--model_type qwen2 --template qwen2_5"` before launching.
+
 ```bash
 source scripts/setup_env.sh
 source configs/runs/score100_T20_C10_posclip.env
@@ -169,7 +273,7 @@ export BT_REWARD_SCALE=1
 
 ---
 
-## 5) Evaluate checkpoints (accuracy + BT log-loss)
+## 6) Evaluate checkpoints (accuracy + BT log-loss)
 
 ### A) Single eval (one checkpoint)
 ```bash
@@ -211,9 +315,9 @@ This produces:
 
 ---
 
-## 6) Variance / uncertainty diagnostics (prompt signal)
+## 7) Variance / uncertainty diagnostics (prompt signal)
 
-### A) Quick smoke test
+### A) Quick smoke test (Summarize from Feedback)
 ```bash
 CUDA_VISIBLE_DEVICES=0 bash tools/run_variance_test.sh \
   --prompt score100_v1 \
@@ -228,6 +332,16 @@ CUDA_VISIBLE_DEVICES=0 bash tools/run_variance_test.sh \
   --unc_low 20 --unc_high 80
 ```
 
+### B) HH-RLHF variance test
+```bash
+CUDA_VISIBLE_DEVICES=0 PYTHONPATH=src python -m grpo_bt_rm.eval.variance \
+  --dataset anthropic_hh --split test \
+  --prompt hh_score100_v3 \
+  --n_pairs 200 --n_samples 8 \
+  --batch_pairs 4 \
+  --range_thresholds "20,30,40"
+```
+
 This reports:
 - expected correctness under aligned sampling (ties=0.5 and strict)
 - wrong-pair uncertainty rates
@@ -236,7 +350,7 @@ This reports:
 
 ---
 
-## 7) Troubleshooting
+## 8) Troubleshooting
 
 ### “Permission denied” when running a script
 Make scripts executable:
@@ -263,7 +377,7 @@ We use `HF_HOME` + `HF_DATASETS_CACHE`. `scripts/setup_env.sh` unsets `TRANSFORM
 
 ---
 
-## 8) Lambda setup (optional)
+## 9) Lambda setup (optional)
 
 If you use Lambda persistent storage, `setup_lambda.sh` bootstraps:
 - persistent venv
