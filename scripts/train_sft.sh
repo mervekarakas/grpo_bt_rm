@@ -56,6 +56,7 @@ echo ""
 cmd=(
   "$(which swift)" sft
   --model "$MODEL"
+  --use_hf true
   --dataset "$DATASET"
   --output_dir "$OUT_DIR"
   --num_train_epochs "$NUM_EPOCHS"

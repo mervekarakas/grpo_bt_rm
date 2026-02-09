@@ -43,8 +43,10 @@ MAX_RESAMPLE_TIMES="${MAX_RESAMPLE_TIMES:-3}"
 REPORT_TO="${REPORT_TO:-wandb}"
 LOG_COMPLETIONS="${LOG_COMPLETIONS:-true}"
 
-# W&B run name to avoid warning; override per run if you want
+# W&B settings
+WANDB_ENTITY="${WANDB_ENTITY:-rlhf_grpo}"
 WANDB_RUN_NAME="${WANDB_RUN_NAME:-$(basename "$OUT_DIR")}"
+export WANDB_ENTITY
 
 # Optional: try to silence DDP warning (only if swift supports this arg)
 # Set DDP_FIND_UNUSED=false/true; default empty => don't pass flag.
@@ -71,8 +73,8 @@ echo "  MODEL=$MODEL"
 echo "  DATASET=$DATASET"
 echo "  OUT_DIR=$OUT_DIR"
 echo "  PLUGIN=$PLUGIN  REWARD_NAME=$REWARD_NAME"
-echo "  BT_SCORE_PARSER=${BT_SCORE_PARSER:-<unset>}  BT_DELTA_TEMP=${BT_DELTA_TEMP:-<unset>}  BT_DELTA_CLIP=${BT_DELTA_CLIP:-<unset>}  BT_DELTA_NEG_CLIP=${BT_DELTA_NEG_CLIP:-<unset>}  BT_REWARD_SCALE=${BT_REWARD_SCALE:-<unset>}"
-echo "  WANDB_PROJECT=${WANDB_PROJECT:-<unset>}  WANDB_RUN_NAME=$WANDB_RUN_NAME"
+echo "  BT_SCORE_PARSER=${BT_SCORE_PARSER:-<unset>}  BT_DELTA_TEMP=${BT_DELTA_TEMP:-<unset>}  BT_DELTA_CLIP=${BT_DELTA_CLIP:-<unset>}  BT_DELTA_NEG_CLIP=${BT_DELTA_NEG_CLIP:-<unset>}  BT_REWARD_SCALE=${BT_REWARD_SCALE:-<unset>}  BT_REWARD_OFFSET=${BT_REWARD_OFFSET:-<unset>}"
+echo "  WANDB_ENTITY=$WANDB_ENTITY  WANDB_PROJECT=${WANDB_PROJECT:-<unset>}  WANDB_RUN_NAME=$WANDB_RUN_NAME"
 echo ""
 
 cmd=(

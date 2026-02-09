@@ -21,6 +21,12 @@ build/
 venv/
 venvs/
 
+# Claude Code
+CLAUDE.md
+
+# Local context docs (not for repo)
+docs/
+
 # Jupyter / misc
 .ipynb_checkpoints/
 .DS_Store

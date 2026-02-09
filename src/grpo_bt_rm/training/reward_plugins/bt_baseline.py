@@ -17,6 +17,7 @@ def _get_params():
     """
     Env knobs (read at call-time):
       BT_REWARD_SCALE     (default 1.0)
+      BT_REWARD_OFFSET    (default 0.0)   -> additive offset after scale
       BT_DELTA_TEMP       (default 1.0)
       BT_DELTA_CLIP       (default 0.0)   -> positive clip
       BT_DELTA_NEG_CLIP   (default 0.0)   -> negative clip (0 => no neg clipping)
@@ -25,8 +26,10 @@ def _get_params():
     Behavior:
       - default: positive-only clipping (neg clip disabled)
       - symmetric: set BT_DELTA_NEG_CLIP = BT_DELTA_CLIP
+      - tie-centering: set BT_REWARD_OFFSET=0.693 so ties give r=0
     """
     reward_scale = _get_float("BT_REWARD_SCALE", 1.0)
+    reward_offset = _get_float("BT_REWARD_OFFSET", 0.0)
     delta_temp = _get_float("BT_DELTA_TEMP", 1.0)
     delta_clip = _get_float("BT_DELTA_CLIP", 0.0)
     delta_neg_clip = _get_float("BT_DELTA_NEG_CLIP", 0.0)
@@ -34,7 +37,7 @@ def _get_params():
     parser_name = os.environ.get("BT_SCORE_PARSER", "score5_last")
     parse_score = get_parser(parser_name)
 
-    return reward_scale, delta_temp, delta_clip, delta_neg_clip, parse_score
+    return reward_scale, reward_offset, delta_temp, delta_clip, delta_neg_clip, parse_score
 
 
 def _group_by_pair(pair_id, side, preferred_side) -> Dict[int, Dict]:
@@ -68,16 +71,21 @@ class BTPointwiseBaselineGeneric(ORM):
       temp=BT_DELTA_TEMP, clip=BT_DELTA_CLIP, neg_clip=BT_DELTA_NEG_CLIP
     """
 
+    _call_count = 0
+    _log_every = int(os.environ.get("BT_LOG_EVERY", "100"))
+
     def __call__(self, completions, pair_id, side, preferred_side, **kwargs):
-        reward_scale, delta_temp, delta_clip, delta_neg_clip, parse_score = _get_params()
+        reward_scale, reward_offset, delta_temp, delta_clip, delta_neg_clip, parse_score = _get_params()
 
         n = len(completions)
         rewards = [0.0] * n
+        x_vals = []  # collect scaled_delta values for logging
         by_pair = _group_by_pair(pair_id, side, preferred_side)
 
         def R(delta: float) -> float:
             x = scaled_delta(delta, temp=delta_temp, clip=delta_clip, neg_clip=delta_neg_clip)
-            return float(log_sigmoid(x)) * reward_scale
+            x_vals.append(x)
+            return float(log_sigmoid(x)) * reward_scale + reward_offset
 
         for _, d in by_pair.items():
             pref = int(d["pref"])
@@ -116,6 +124,17 @@ class BTPointwiseBaselineGeneric(ORM):
                 for i in idx0:
                     z = z0_map[i]
                     rewards[i] = -1.0 if z is None else R(z1_bar - z)
+
+        # Periodic logging of scaled_delta distribution
+        BTPointwiseBaselineGeneric._call_count += 1
+        if x_vals and BTPointwiseBaselineGeneric._call_count % BTPointwiseBaselineGeneric._log_every == 0:
+            import statistics
+            x_mean = statistics.mean(x_vals)
+            x_std = statistics.stdev(x_vals) if len(x_vals) > 1 else 0.0
+            x_near_zero = sum(1 for x in x_vals if abs(x) < 0.1) / len(x_vals)
+            x_saturated = sum(1 for x in x_vals if abs(x) > 3.0) / len(x_vals)
+            print(f"[BT_DELTA] n={len(x_vals)} x_mean={x_mean:.3f} x_std={x_std:.3f} "
+                  f"near_zero={x_near_zero:.1%} saturated={x_saturated:.1%}")
 
         return rewards
 
