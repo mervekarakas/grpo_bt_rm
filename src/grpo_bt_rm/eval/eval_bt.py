@@ -112,18 +112,22 @@ def main(argv: Optional[List[str]] = None):
             prompts.append(prompt_fn(post, s1))
             labels.append(label)
 
-        # Sample raw completions n_samples times
+        # Sample raw completions using num_return_sequences (single call)
+        outs = generate_batch(
+            tok, model, prompts,
+            max_new_tokens=args.max_new_tokens,
+            do_sample=args.do_sample,
+            temperature=args.temperature,
+            top_p=args.top_p,
+            top_k=args.top_k,
+            num_return_sequences=args.n_samples,
+        )
+        # outs is flat: [p0_s0, p0_s1, ..., p0_sN, p1_s0, ...] len = n_prompts * n_samples
+        # Reshape to all_out_texts[sample_idx][prompt_idx] for compatibility
+        n_prompts = len(prompts)
         all_out_texts: List[List[str]] = []
-        for _ in range(args.n_samples):
-            outs = generate_batch(
-                tok, model, prompts,
-                max_new_tokens=args.max_new_tokens,
-                do_sample=args.do_sample,
-                temperature=args.temperature,
-                top_p=args.top_p,
-                top_k=args.top_k,
-            )
-            all_out_texts.append(outs)
+        for k in range(args.n_samples):
+            all_out_texts.append([outs[j * args.n_samples + k] for j in range(n_prompts)])
 
         # Parse scores per item and average
         avg_scores: List[Optional[float]] = []

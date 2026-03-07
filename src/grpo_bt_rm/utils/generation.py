@@ -6,7 +6,14 @@ SYSTEM_DEFAULT = "You are Qwen, created by Alibaba Cloud. You are a helpful assi
 @torch.inference_mode()
 def generate_batch(tok, model, prompts: List[str], max_new_tokens: int,
                    do_sample: bool, temperature: float, top_p: float, top_k: int,
-                   system: str = SYSTEM_DEFAULT) -> List[str]:
+                   system: str = SYSTEM_DEFAULT,
+                   num_return_sequences: int = 1) -> List[str]:
+    """Generate completions for a batch of prompts.
+
+    Returns flat list of length len(prompts) * num_return_sequences.
+    For num_return_sequences > 1, outputs are grouped by prompt:
+    [p0_s0, p0_s1, ..., p1_s0, p1_s1, ...]
+    """
     msgs = [[{"role": "system", "content": system}, {"role": "user", "content": p}] for p in prompts]
     texts = [tok.apply_chat_template(m, tokenize=False, add_generation_prompt=True) for m in msgs]
 
@@ -16,7 +23,8 @@ def generate_batch(tok, model, prompts: List[str], max_new_tokens: int,
 
     inputs = tok(texts, return_tensors="pt", padding=True, truncation=True).to("cuda")
 
-    gen_kwargs = dict(max_new_tokens=max_new_tokens, do_sample=do_sample)
+    gen_kwargs = dict(max_new_tokens=max_new_tokens, do_sample=do_sample,
+                      num_return_sequences=num_return_sequences)
     if do_sample:
         gen_kwargs.update(dict(temperature=temperature, top_p=top_p, top_k=top_k))
 

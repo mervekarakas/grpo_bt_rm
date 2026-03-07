@@ -1,0 +1,62 @@
+diff --git a/swift/rlhf_trainers/args_mixin.py b/swift/rlhf_trainers/args_mixin.py
+index b3dbaea39..04d6ef8cf 100644
+--- a/swift/rlhf_trainers/args_mixin.py
++++ b/swift/rlhf_trainers/args_mixin.py
+@@ -343,6 +343,9 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
+     # GDPO: normalize each reward function separately, https://arxiv.org/abs/2601.05242
+     scale_rewards: Optional[Literal['group', 'batch', 'none', 'gdpo']] = None
+ 
++    # Advantage filtering: zero out groups with reward std below this threshold
++    min_reward_std: float = 0.0
++
+     # entropy
+     log_entropy: bool = False
+     # Beyond the 80/20 Rule, https://arxiv.org/abs/2506.01939
+diff --git a/swift/rlhf_trainers/grpo_trainer.py b/swift/rlhf_trainers/grpo_trainer.py
+index 8aa990622..cf8a16e3a 100644
+--- a/swift/rlhf_trainers/grpo_trainer.py
++++ b/swift/rlhf_trainers/grpo_trainer.py
+@@ -478,6 +478,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
+         def normalize_advantages(advantages: torch.Tensor, rewards_std: torch.Tensor) -> torch.Tensor:
+             """Normalize advantages if configured; otherwise, return as-is."""
+             if self.scale_rewards != 'none':
++                if self.min_reward_std > 0:
++                    rewards_std = torch.clamp(rewards_std, min=self.min_reward_std)
+                 return advantages / (rewards_std + 1e-4)
+             return advantages
+ 
+@@ -620,6 +622,13 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
+                 if rewards_std is not None:
+                     advantages = normalize_advantages(advantages, rewards_std)
+ 
++            # Log fraction of groups where std was floored (for monitoring)
++            if self.min_reward_std > 0:
++                group_std = grouped_rewards.std(dim=1)
++                is_std_low = group_std < self.min_reward_std
++                mode = 'train' if self.model.training else 'eval'
++                self._metrics[mode]['frac_reward_low_std'].append(is_std_low.float().mean().item())
++
+             # Log metrics once per group
+             log_rewards_metrics(rewards=grouped_rewards, rewards_per_func_for_metrics=rewards_per_func)
+ 
+@@ -2194,6 +2203,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
+ 
+         self.loss_type = args.loss_type  # loss normalization
+         self.scale_rewards = args.scale_rewards
++        self.min_reward_std = getattr(args, 'min_reward_std', 0.0)
+ 
+         # GRPO, https://arxiv.org/abs/2402.03300
+         self.num_iterations = args.num_iterations  # = 𝜇 in the GRPO paper, Multi-step
+diff --git a/swift/rlhf_trainers/reward_trainer.py b/swift/rlhf_trainers/reward_trainer.py
+index f0d65d334..646e7a928 100644
+--- a/swift/rlhf_trainers/reward_trainer.py
++++ b/swift/rlhf_trainers/reward_trainer.py
+@@ -14,7 +14,7 @@ from trl import RewardTrainer as HFRewardTrainer
+ from trl.trainer.utils import print_rich_table
+ 
+ from swift.utils import get_logger
+-from ..mixin import SwiftMixin
++from swift.trainers import SwiftMixin
+ from .rlhf_mixin import RLHFTrainerMixin
+ 
+ del HFRewardTrainer.__init__

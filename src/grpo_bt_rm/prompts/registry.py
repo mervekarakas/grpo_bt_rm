@@ -3,7 +3,7 @@ from typing import Callable, Dict
 
 from .score100 import score100_v1
 from .score5 import score5_v1, score5_v2, score5_v3, score5_v4
-from .hh import hh_score100_v1, hh_score100_v2, hh_score100_v3, hh_score100_v4, hh_score5_v1, hh_score5_v2, hh_score5_v3, hh_score5_v4
+from .hh import hh_score100_v1, hh_score100_v2, hh_score100_v3, hh_score100_v4, hh_score5_v1, hh_score5_v2, hh_score5_v3, hh_score5_v4, hh_score100_scoreonly
 
 PromptFn = Callable[[str, str], str]
 
@@ -27,6 +27,7 @@ PROMPT_REGISTRY: Dict[str, PromptSpec] = {
     "hh_score5_v3":   PromptSpec(hh_score5_v3,   default_parser="score5_last",    desc="HH 1–5 reason-first"),
     "hh_score100_v4": PromptSpec(hh_score100_v4, default_parser="score100_last",  desc="HH 0–100 pros-cons-first"),
     "hh_score5_v4":   PromptSpec(hh_score5_v4,   default_parser="score5_last",    desc="HH 1–5 pros-cons-first"),
+    "hh_score100_scoreonly": PromptSpec(hh_score100_scoreonly, default_parser="score100_last", desc="HH 0–100 score-only, no reasoning"),
 }
 
 def get_prompt(name: str) -> PromptSpec:

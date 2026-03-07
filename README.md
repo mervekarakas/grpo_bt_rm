@@ -6,7 +6,7 @@ This repo provides:
 - **Prompt + parser registries** (`score5_*`, `score100_*`, `hh_score100_v1`–`v4`, `hh_score5_v1`–`v4`)
 - **Pointwise JSONL dataset builder** (2 rows per preference pair: side=0 then side=1)
 - **SFT warm-up pipeline**: teacher data generation via API (Claude / Gemini) + SFT training before GRPO
-- **Reward plugins** for ms-swift GRPO (BT baseline + optional pair-shared + hardmine variants)
+- **Reward plugins** for ms-swift GRPO (BT baseline, graded, hard-margin, binary, hardmine variants)
 - **Evaluation** over checkpoints with accuracy + tie rate + **BT log-loss** + tail diagnostics
 - **Variance / uncertainty diagnostics** to sanity-check prompt signal
 
@@ -79,6 +79,22 @@ from swift.rlhf_trainers.pair_sampler import PairRepeatSampler
 print("PairRepeatSampler import OK:", PairRepeatSampler)
 PY
 ```
+
+### C.1) Apply ms-swift patches (required for GRPO experiments)
+
+After installing ms-swift, apply these patches to the installed `swift/rlhf_trainers/` directory:
+
+1. **`args_mixin.py`**: Adds `min_reward_std` field to `GRPOArgumentsMixin` (advantage filtering — zeroes out groups with reward std below threshold)
+2. **`grpo_trainer.py`**: Implements advantage filtering logic + `frac_reward_low_std` metric logging
+3. **`reward_trainer.py`**: Fixes import: `from swift.trainers import SwiftMixin` (instead of relative import)
+
+Find the swift install location and apply:
+```bash
+SWIFT_DIR=$(python3 -c "import swift; import os; print(os.path.dirname(swift.__file__))")
+# Copy the 3 patched files from patches/ directory (or apply manually)
+```
+
+The patches are small (15 lines total). See `scripts/setup_lambda_remote.sh` for the automated version.
 
 ### D) Make scripts executable
 ```bash
@@ -166,8 +182,9 @@ python -m grpo_bt_rm.data.build_dataset \
 | `hh_score100_v3` | `score100_last` | Reason-first 0–100 | HH |
 | `hh_score100_v4` | `score100_last` | Pros-cons-first 0–100 | HH |
 | `hh_score5_v1`–`v4` | `score5_first`/`last` | Same styles, 1–5 scale | HH |
+| `hh_score100_scoreonly` | `score100_last` | Score-only, no reasoning | HH |
 
-**Score-first** prompts output `<s>NN</s>` before the explanation. **Reason-first** prompts write reasoning first, then the score tag. Reason-first (v3) tends to give better accuracy + variance on the base model.
+**Score-first** prompts output `<s>NN</s>` before the explanation. **Reason-first** prompts write reasoning first, then the score tag. **Score-only** outputs just the score tag with no reasoning (used for score-token-only RL). Reason-first (v3) tends to give better accuracy + variance on the base model.
 
 ---
 
@@ -263,13 +280,73 @@ and will pass:
 - `PLUGIN` (default points to `src/grpo_bt_rm/training/reward_plugins/bt_baseline.py`)
 - `REWARD_NAME` (default `bt_pointwise_baseline`)
 
-### B) Common env vars used by reward plugins
+### B) Reward plugins
+
+All plugins are in `src/grpo_bt_rm/training/reward_plugins/` and are loaded via ms-swift's `--external_plugins` flag.
+
+| Plugin | Registered Name | Description |
+|--------|----------------|-------------|
+| `bt_baseline.py` | `bt_pointwise_baseline` | Continuous log-sigmoid BT reward |
+| `bt_graded.py` | `bt_pointwise_graded` | PaTaRM-style bounded graded reward (0/1.2/1.4) |
+| `bt_graded_hardpair.py` | `bt_pointwise_graded_hardpair` | Graded + DWRL-style hard-pair weighting |
+| `bt_hard_margin.py` | `bt_hard_margin` | Marginized BT + hard-pair weighting (main method) |
+| `bt_binary.py` | `bt_pointwise_binary` | Constant +1/-1 binary reward |
+
+**Common env vars** (read at runtime by all BT plugins):
 ```bash
-export BT_SCORE_PARSER=score100_first   # or score5_last
-export BT_DELTA_TEMP=20
-export BT_DELTA_CLIP=10
-export BT_DELTA_NEG_CLIP=0             # 0 => positive-only clip
-export BT_REWARD_SCALE=1
+export BT_SCORE_PARSER=score100_last    # parser for extracting score from completion
+export BT_SCORE_TEMP=20                 # temperature for normalizing raw score deltas
+```
+
+**Plugin-specific env vars:**
+
+For `bt_baseline`:
+```bash
+export BT_DELTA_TEMP=20  BT_DELTA_CLIP=10  BT_DELTA_NEG_CLIP=0  BT_REWARD_SCALE=1
+```
+
+For `bt_graded` / `bt_graded_hardpair`:
+```bash
+export BT_GRADE_THRESH=0.1  BT_REWARD_LOW=1.2  BT_REWARD_HIGH=1.4
+export BT_REWARD_WRONG=0.0  BT_REWARD_PARSE_FAIL=-0.5
+export BT_HARD_TAU=1.0      # hardpair only: sigmoid temperature
+```
+
+For `bt_hard_margin`:
+```bash
+export BT_MARGIN_GAMMA=0.5  BT_MARGIN_TEMP=1.0  BT_HARD_TAU=1.0
+export BT_REWARD_PARSE_FAIL=-1.0
+```
+
+### C) Experiment configs
+
+Pre-built configs in `configs/runs/`:
+
+| Config | Experiment | Key Idea |
+|--------|-----------|----------|
+| `hh_exp4_scoreonly_hardmargin.env` | Score-Only Hard-BT (main) | Score-only RL + marginized BT + hard-pair |
+| `hh_exp1_graded.env` | Full-token graded (ablation) | Reasoning+score, PaTaRM-style reward |
+| `hh_exp3_scoreonly_graded.env` | Score-only graded (ablation) | Score-only, PaTaRM-style reward |
+| `hh_exp2_graded_hardpair.env` | Full-token graded+hardpair | Reasoning+score, graded + hard-pair |
+
+Example:
+```bash
+source scripts/setup_env.sh
+source configs/runs/hh_exp4_scoreonly_hardmargin.env
+bash scripts/train_grpo.sh 0,1
+```
+
+### D) Automated experiment runner
+
+`scripts/launch_lambda_experiments.sh` runs experiments sequentially with auto-eval:
+```bash
+# Run specific experiments on given GPUs:
+bash scripts/launch_lambda_experiments.sh 0,1 exp4 exp1 exp3
+```
+
+`scripts/gpu_watcher.sh` watches GPUs and launches experiments when they become idle:
+```bash
+tmux new -s watcher 'bash scripts/gpu_watcher.sh'
 ```
 
 ---
@@ -378,16 +455,35 @@ We use `HF_HOME` + `HF_DATASETS_CACHE`. `scripts/setup_env.sh` unsets `TRANSFORM
 
 ---
 
-## 9) Lambda setup (optional)
+## 9) Remote GPU setup (Lambda / other servers)
 
-If you use Lambda persistent storage, `setup_lambda.sh` bootstraps:
-- persistent venv
-- HF cache dirs
-- installs `requirements.txt`
-- clones your pinned ms-swift fork/commit and installs editable
+### Quick setup via rsync
 
+From the local machine with all code:
 ```bash
-bash setup_lambda.sh
+# Sync code + datasets to remote server
+bash scripts/setup_lambda.sh <REMOTE_IP> [SSH_KEY]
+```
+
+Then SSH into the remote and run:
+```bash
+bash /data/grpo_bt_rm/scripts/setup_lambda_remote.sh
+```
+
+This installs venv, ms-swift + patches, dependencies, and downloads the model.
+
+### Running experiments
+```bash
+source /data/venv/bin/activate
+cd /data/grpo_bt_rm
+wandb login $WANDB_API_KEY
+
+# Option A: Run all experiments sequentially
+bash scripts/launch_lambda_experiments.sh 0,1
+
+# Option B: Run specific experiments in parallel
+tmux new -s main 'bash scripts/launch_lambda_experiments.sh 0,1 exp4'
+tmux new -s abl  'bash scripts/launch_lambda_experiments.sh 2,3 exp1 exp3'
 ```
 
 ---
